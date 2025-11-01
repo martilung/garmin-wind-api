@@ -13,7 +13,6 @@ function deg2rad(deg) {
 }
 
 // --- Helper function to calculate distance between two lat/lon points ---
-// This is the Haversine formula, which returns distance in kilometers
 function getDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Radius of the earth in km
   const dLat = deg2rad(lat2 - lat1);
@@ -52,10 +51,7 @@ export default async function handler(req, res) {
     
     const data = await response.json(); 
     
-    // --- THIS IS THE FIX ---
-    // The API returns { "entries": { "entry": [ ... ] } }
     const allStations = data?.entries?.entry;
-    // --- END OF FIX ---
 
     if (!allStations || allStations.length === 0) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
@@ -65,15 +61,13 @@ export default async function handler(req, res) {
 
     // --- STEP 2: Calculate distance for every station ---
     const stationsWithDistance = allStations.map(station => {
-      // The API uses 'latitude' and 'longitude' (decimal)
       const stationLat = parseFloat(station.latitude);
       const stationLon = parseFloat(station.longitude);
-      
       const distance = getDistance(userLat, userLon, stationLat, stationLon);
       
       return {
-        ...station, // Keep all original station data
-        distance: distance // Add our new distance field
+        ...station, 
+        distance: distance 
       };
     });
 
@@ -82,20 +76,22 @@ export default async function handler(req, res) {
 
     // --- STEP 4: Find the nearest station with VALID data ---
     
-    // Get the current time (in Unix seconds)
     const now_unix = Math.floor(Date.now() / 1000);
-    // Get the timestamp for 2 hours ago
-    const twoHoursAgo_unix = now_unix - (2 * 3600); // 3600 seconds/hour
+    const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
 
     for (const station of sortedStations) {
-      // The timestamp is a Unix timestamp (e.g., 1678886400)
-      const stationTimestamp = parseInt(station.timestamp, 10);
+      // The timestamp is an ISO 8601 string
+      // e.g., "2025-11-01T16:00:00.000+02:00"
+      
+      // --- THIS IS THE FIX ---
+      // We parse the ISO string into a Unix timestamp (in seconds)
+      const stationTimestamp_unix = Math.floor(new Date(station.timestamp).getTime() / 1000);
+      // --- END OF FIX ---
       
       // --- Check 1: Is the data recent? ---
-      if (stationTimestamp >= twoHoursAgo_unix) {
+      if (stationTimestamp_unix >= twoHoursAgo_unix) {
         
         // --- Check 2: Does it have valid wind data? ---
-        // The API uses 'windspeed' and 'winddirection' (numbers)
         if (station.windspeed !== null && station.winddirection !== null) {
           
           // --- SUCCESS! ---
