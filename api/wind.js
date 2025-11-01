@@ -12,6 +12,16 @@ function deg2rad(deg) {
   return deg * (Math.PI / 180);
 }
 
+// --- NEW Helper to convert DMS (from EMHI strings) to Decimal ---
+function dmsToDecimal(kraad, minut, sekund) {
+  const K = parseFloat(kraad);
+  const M = parseFloat(minut);
+  const S = parseFloat(sekund);
+  
+  // Decimal = Degrees + (Minutes / 60) + (Seconds / 3600)
+  return K + (M / 60) + (S / 3600);
+}
+
 // --- Helper function to calculate distance between two lat/lon points ---
 function getDistance(lat1, lon1, lat2, lon2) {
   const R = 6371; // Radius of the earth in km
@@ -50,7 +60,6 @@ export default async function handler(req, res) {
     }
     
     const data = await response.json(); 
-    
     const allStations = data?.entries?.entry;
 
     if (!allStations || allStations.length === 0) {
@@ -61,8 +70,13 @@ export default async function handler(req, res) {
 
     // --- STEP 2: Calculate distance for every station ---
     const stationsWithDistance = allStations.map(station => {
-      const stationLat = parseFloat(station.latitude);
-      const stationLon = parseFloat(station.longitude);
+      
+      // --- THIS IS THE FIX (Part 1) ---
+      // We parse the correct DMS coordinate keys
+      const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
+      const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
+      // --- END OF FIX ---
+
       const distance = getDistance(userLat, userLon, stationLat, stationLon);
       
       return {
@@ -80,27 +94,33 @@ export default async function handler(req, res) {
     const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
 
     for (const station of sortedStations) {
-      // The timestamp is an ISO 8601 string
-      // e.g., "2025-11-01T16:00:00.000+02:00"
       
-      // --- THIS IS THE FIX ---
-      // We parse the ISO string into a Unix timestamp (in seconds)
-      const stationTimestamp_unix = Math.floor(new Date(station.timestamp).getTime() / 1000);
+      // --- THIS IS THE FIX (Part 2) ---
+      // We parse the correct 'Time' key
+      const stationTimestamp_unix = Math.floor(new Date(station.Time).getTime() / 1000);
       // --- END OF FIX ---
       
       // --- Check 1: Is the data recent? ---
       if (stationTimestamp_unix >= twoHoursAgo_unix) {
         
-        // --- Check 2: Does it have valid wind data? ---
-        if (station.windspeed !== null && station.winddirection !== null) {
+        // --- THIS IS THE FIX (Part 3) ---
+        // We check for the correct 'ws10ma' and 'wd10ma' keys
+        if (station.ws10ma !== null && station.wd10ma !== null) {
+        // --- END OF FIX ---
           
           // --- SUCCESS! ---
-          console.log(`!!! SUCCESS: Found valid data at '${station.name}' (Distance: ${station.distance.toFixed(1)} km)`);
+          console.log(`!!! SUCCESS: Found valid data at '${station.Jaam}' (Distance: ${station.distance.toFixed(1)} km)`);
           
+          // --- THIS IS THE FIX (Part 4) ---
+          // The data is already a string with a period, no replace() needed.
+          const windSpeed = parseFloat(station.ws10ma);
+          const windDir = parseFloat(station.wd10ma);
+          // --- END OF FIX ---
+
           res.setHeader('Cache-Control', 's-maxage=600'); // Cache for 10 minutes
           return res.status(200).json({
-            windSpeed: station.windspeed,
-            windDir: station.winddirection
+            windSpeed: windSpeed,
+            windDir: windDir
           });
         }
       }
