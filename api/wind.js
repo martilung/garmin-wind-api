@@ -8,29 +8,31 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing lat/lon parameters" });
   }
 
-  // --- THIS IS THE FIX ---
-  // We add a 'User-Agent' header to "trick" the server
-  // into respecting our 'Accept' header.
+  // Set the correct headers
   const requestHeaders = new Headers();
   requestHeaders.append('Accept', 'application/json');
-  requestHeaders.append('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36');
-  // --- END OF FIX ---
 
   try {
     // --- STEP 1: Get Nearest Station (Your Logic) ---
-    const stationURL = `https://publicapi.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?lat=${lat}&lon=${lon}`;
 
-    // Pass the new, full headers
+    // --- THIS IS THE DOMAIN FIX ---
+    const stationURL = `https://ilmmicroservice.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?lat=${lat}&lon=${lon}`;
+
+    // Pass the headers
     const stationRes = await fetch(stationURL, { headers: requestHeaders });
 
     if (!stationRes.ok) {
       throw new Error(`EMHI P1 Error: ${stationRes.status}`);
     }
 
-    // This line was crashing
+    // This line was crashing. It will now receive a JSON Array: [ ... ]
     const stationData = await stationRes.json();
 
-    const station = stationData?.entries?.entry?.[0];
+    // --- THIS IS THE PARSER FIX ---
+    // The root is an Array, so we take the first element
+    const station = stationData?.[0];
+    // --- END OF FIX ---
+
     if (!station) {
       return res.status(500).json({ error: "P1_PARSE" });
     }
@@ -49,17 +51,24 @@ export default async function handler(req, res) {
     const dateStr = estonianTime.toISOString().split('T')[0];
     const hourStr = estonianTime.getHours().toString().padStart(2, '0');
 
-    const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
+    // --- THIS IS THE DOMAIN FIX ---
+    const windURL = `https://ilmmicroservice.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
 
-    // Pass the new, full headers to the second call
+    // Pass the headers to the second call
     const windRes = await fetch(windURL, { headers: requestHeaders });
 
     if (!windRes.ok) {
       throw new Error(`EMHI P2 Error: ${windRes.status}`);
     }
 
+    // This will also receive a JSON Array: [ ... ]
     const windData = await windRes.json();
-    const allStations = windData?.entries?.entry;
+
+    // --- THIS IS THE PARSER FIX ---
+    // The root is the Array of all stations
+    const allStations = windData;
+    // --- END OF FIX ---
+
     if (!allStations) {
       return res.status(500).json({ error: "P2_PARSE" });
     }
