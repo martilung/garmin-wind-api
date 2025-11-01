@@ -17,7 +17,7 @@ function dmsToDecimal(kraad, minut, sekund) {
   const K = parseFloat(kraad);
   const M = parseFloat(minut);
   const S = parseFloat(sekund);
-  
+
   // Decimal = Degrees + (Minutes / 60) + (Seconds / 3600)
   return K + (M / 60) + (S / 3600);
 }
@@ -52,36 +52,33 @@ export default async function handler(req, res) {
   try {
     // --- STEP 1: Get the *ENTIRE* list of stations ---
     const url = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
-    
+
     const response = await fetch(url, { headers: requestHeaders });
 
     if (!response.ok) {
       throw new Error(`EMHI Error: ${response.status}`);
     }
-    
-    const data = await response.json(); 
+
+    const data = await response.json();
     const allStations = data?.entries?.entry;
 
     if (!allStations || allStations.length === 0) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
     }
-    
+
     console.log(`Found ${allStations.length} stations. Calculating distances...`);
 
     // --- STEP 2: Calculate distance for every station ---
     const stationsWithDistance = allStations.map(station => {
-      
-      // --- THIS IS THE FIX (Part 1) ---
-      // We parse the correct DMS coordinate keys
+
       const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
-      // --- END OF FIX ---
 
       const distance = getDistance(userLat, userLon, stationLat, stationLon);
-      
+
       return {
-        ...station, 
-        distance: distance 
+        ...station,
+        distance: distance
       };
     });
 
@@ -89,35 +86,30 @@ export default async function handler(req, res) {
     const sortedStations = stationsWithDistance.sort((a, b) => a.distance - b.distance);
 
     // --- STEP 4: Find the nearest station with VALID data ---
-    
+
     const now_unix = Math.floor(Date.now() / 1000);
     const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
 
     for (const station of sortedStations) {
-      
-      // --- THIS IS THE FIX (Part 2) ---
-      // We parse the correct 'Time' key
+
       const stationTimestamp_unix = Math.floor(new Date(station.Time).getTime() / 1000);
-      // --- END OF FIX ---
-      
+
       // --- Check 1: Is the data recent? ---
       if (stationTimestamp_unix >= twoHoursAgo_unix) {
-        
-        // --- THIS IS THE FIX (Part 3) ---
-        // We check for the correct 'ws10ma' and 'wd10ma' keys
+
+        // --- Check 2: Does it have valid wind data? ---
         if (station.ws10ma !== null && station.wd10ma !== null) {
-        // --- END OF FIX ---
-          
+
           // --- SUCCESS! ---
           console.log(`!!! SUCCESS: Found valid data at '${station.Jaam}' (Distance: ${station.distance.toFixed(1)} km)`);
-          
-          // --- THIS IS THE FIX (Part 4) ---
-          // The data is already a string with a period, no replace() needed.
+
           const windSpeed = parseFloat(station.ws10ma);
           const windDir = parseFloat(station.wd10ma);
-          // --- END OF FIX ---
 
-          res.setHeader('Cache-Control', 's-maxage=600'); // Cache for 10 minutes
+          // --- THIS IS THE CHANGE ---
+          res.setHeader('Cache-Control', 's-maxage=3600'); // Cache for 1 hour
+          // --- END OF CHANGE ---
+
           return res.status(200).json({
             windSpeed: windSpeed,
             windDir: windDir
