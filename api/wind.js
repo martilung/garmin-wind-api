@@ -8,41 +8,42 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing lat/lon parameters" });
   }
 
-  // --- THIS IS THE FIX ---
-  // We are adding a 'User-Agent' header to "trick" the server
-  // into respecting our 'Accept: application/json' header.
+  // --- THE "WINNING FORMULA" HEADERS ---
   const requestHeaders = new Headers();
   requestHeaders.append('Accept', 'application/json');
   requestHeaders.append('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36');
-  // --- END OF FIX ---
+  // --- END ---
 
   try {
     // --- STEP 1: Get Nearest Station (Your Logic) ---
-    // We are using the correct 'ilmmicroservice' domain
-    const stationURL = `https://ilmmicroservice.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?lat=${lat}&lon=${lon}`;
-
-    // Pass the new, full headers
+    
+    // --- THE "WINNING FORMULA" URL ---
+    // Domain: publicapi.envir.ee
+    // Params: latitude= & longitude=
+    const stationURL = `https://publicapi.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?latitude=${lat}&longitude=${lon}`;
+    // --- END ---
+    
     const stationRes = await fetch(stationURL, { headers: requestHeaders });
 
     if (!stationRes.ok) {
       throw new Error(`EMHI P1 Error: ${stationRes.status}`);
     }
-
-    // This line was crashing. It should now receive a JSON Array: [ ... ]
-    const stationData = await stationRes.json();
-
-    // The root is an Array, so we take the first element
-    const station = stationData?.[0];
+    
+    const stationData = await stationRes.json(); 
+    
+    // The response is { "entries": { "entry": [ ... ] } }
+    const station = stationData?.entries?.entry?.[0];
 
     if (!station) {
       return res.status(500).json({ error: "P1_PARSE" });
     }
 
-    const distance = station.kaugus;
-    const name = station.nimi;
+    const distance = station.kaugus; // This is a String, e.g. "5.9"
+    const name = station.nimi; 
 
     // --- STEP 2: Your 200km Check ---
-    if (distance > 200) {
+    // We must parseFloat() the distance string
+    if (parseFloat(distance) > 200) {
       return res.status(200).json({ error: "OOR" }); // Out of Range
     }
 
@@ -52,21 +53,19 @@ export default async function handler(req, res) {
     const dateStr = estonianTime.toISOString().split('T')[0];
     const hourStr = estonianTime.getHours().toString().padStart(2, '0');
 
-    // We are using the correct 'ilmmicroservice' domain
-    const windURL = `https://ilmmicroservice.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
+    // Use the same working domain
+    const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
 
-    // Pass the new, full headers to the second call
     const windRes = await fetch(windURL, { headers: requestHeaders });
 
     if (!windRes.ok) {
       throw new Error(`EMHI P2 Error: ${windRes.status}`);
     }
-
-    // This should also receive a JSON Array: [ ... ]
+    
     const windData = await windRes.json();
-
-    // The root is the Array of all stations
-    const allStations = windData;
+    
+    // This API also responds with { "entries": { "entry": [ ... ] } }
+    const allStations = windData?.entries?.entry;
 
     if (!allStations) {
       return res.status(500).json({ error: "P2_PARSE" });
