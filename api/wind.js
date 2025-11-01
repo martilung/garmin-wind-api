@@ -9,36 +9,34 @@ export default async function handler(req, res) {
   }
 
   // --- THIS IS THE FIX ---
-  // Create a formal Headers object, which is more robust
-  // Use 'Accept' (capital 'A') just in case the server is case-sensitive
+  // We add a 'User-Agent' header to "trick" the server
+  // into respecting our 'Accept' header.
   const requestHeaders = new Headers();
   requestHeaders.append('Accept', 'application/json');
+  requestHeaders.append('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36');
   // --- END OF FIX ---
 
   try {
     // --- STEP 1: Get Nearest Station (Your Logic) ---
     const stationURL = `https://publicapi.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?lat=${lat}&lon=${lon}`;
-    
-    // --- THIS IS THE FIX ---
-    // Pass the formal headers object to the fetch call
+
+    // Pass the new, full headers
     const stationRes = await fetch(stationURL, { headers: requestHeaders });
-    // --- END OF FIX ---
 
     if (!stationRes.ok) {
       throw new Error(`EMHI P1 Error: ${stationRes.status}`);
     }
-    
-    // This line was crashing because it was getting XML
-    const stationData = await stationRes.json(); 
-    
-    // Drill into the JSON
+
+    // This line was crashing
+    const stationData = await stationRes.json();
+
     const station = stationData?.entries?.entry?.[0];
     if (!station) {
       return res.status(500).json({ error: "P1_PARSE" });
     }
 
     const distance = station.kaugus;
-    const name = station.nimi; // e.g., "Pirita RJ"
+    const name = station.nimi;
 
     // --- STEP 2: Your 200km Check ---
     if (distance > 200) {
@@ -53,16 +51,14 @@ export default async function handler(req, res) {
 
     const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
 
-    // --- THIS IS THE FIX ---
-    // Added the formal headers to the *second* fetch call
+    // Pass the new, full headers to the second call
     const windRes = await fetch(windURL, { headers: requestHeaders });
-    // --- END OF FIX ---
 
     if (!windRes.ok) {
       throw new Error(`EMHI P2 Error: ${windRes.status}`);
     }
-    
-    const windData = await windRes.json(); // This line was also at risk
+
+    const windData = await windRes.json();
     const allStations = windData?.entries?.entry;
     if (!allStations) {
       return res.status(500).json({ error: "P2_PARSE" });
