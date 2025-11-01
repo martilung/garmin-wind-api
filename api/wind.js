@@ -47,52 +47,73 @@ export default async function handler(req, res) {
       return res.status(200).json({ error: "OOR" }); // Out of Range
     }
 
-    // --- STEP 3: Get Wind Data (Your Logic) ---
+    // --- STEP 3: Get Wind Data (Fallback Logic) ---
     const now = new Date();
     const estonianTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Tallinn' }));
-    const dateStr = estonianTime.toISOString().split('T')[0];
-    const hourStr = estonianTime.getHours().toString().padStart(2, '0');
-
-    // Use the same working domain
-    const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
-
-    const windRes = await fetch(windURL, { headers: requestHeaders });
-
-    if (!windRes.ok) {
-      throw new Error(`EMHI P2 Error: ${windRes.status}`);
-    }
-    
-    const windData = await windRes.json();
-    
-    // This API also responds with { "entries": { "entry": [ ... ] } }
-    const allStations = windData?.entries?.entry;
-
-    if (!allStations) {
-      return res.status(500).json({ error: "P2_PARSE" });
-    }
-
-    // --- STEP 4: Find Matching Station ---
     const nameToMatch = name.split(" ")[0]; // "Pirita RJ" -> "Pirita"
-    const stationMatch = allStations.find(s => s.jaam === nameToMatch);
 
-    if (!stationMatch) {
-      return res.status(200).json({ error: "NO_MATCH" });
+    // --- THIS IS THE NEW LOGIC ---
+    // We will try the current hour, then -1h, -2h, -3h.
+    for (let hourOffset = 0; hourOffset <= 3; hourOffset++) {
+      const timeToTry = new Date(estonianTime.getTime() - hourOffset * 3600000); // 3600000ms = 1 hour
+
+      const dateStr = timeToTry.toISOString().split('T')[0];
+      const hourStr = timeToTry.getHours().toString().padStart(2, '0');
+
+      // Use the same working domain
+      const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
+
+      const windRes = await fetch(windURL, { headers: requestHeaders });
+
+      if (!windRes.ok) {
+        throw new Error(`EMHI P2 Error: ${windRes.status} for hour ${hourStr}`);
+      }
+      
+      const windData = await windRes.json();
+      
+      // This API also responds with { "entries": { "entry": [ ... ] } }
+      const allStations = windData?.entries?.entry;
+
+      if (!allStations) {
+        // This hour's data is likely not published yet, but not a fatal error
+        // Continue to the next loop iteration (try the previous hour)
+        continue; 
+      }
+
+      // --- STEP 4: Find Matching Station ---
+      const stationMatch = allStations.find(s => s.jaam === nameToMatch);
+
+      if (!stationMatch) {
+        // No match for this station in this hour's data, try previous hour
+        continue;
+      }
+
+      // --- STEP 5: Fix & Format Data ---
+      const ws10ma_str = stationMatch.ws10ma; // "3,6" or null
+      const wd10ma_str = stationMatch.wd10ma; // "69.0" or null
+
+      // --- CRITICAL CHECK ---
+      // If the data is null (e.g., current hour), try the previous hour
+      if (ws10ma_str === null || wd10ma_str === null) {
+        continue;
+      }
+
+      // --- WE FOUND VALID DATA! ---
+      // Fix the comma-decimal
+      const windSpeed = parseFloat(ws10ma_str.replace(",", "."));
+      const windDir = parseFloat(wd10ma_str);
+
+      // --- FINAL STEP: Send Perfect JSON to Garmin ---
+      res.setHeader('Cache-Control', 's-maxage=600'); // Cache for 10 minutes
+      return res.status(200).json({
+        windSpeed: windSpeed,
+        windDir: windDir
+      });
     }
+    // --- END OF NEW LOGIC ---
 
-    // --- STEP 5: Fix & Format Data ---
-    const ws10ma_str = stationMatch.ws10ma; // "3,6"
-    const wd10ma_str = stationMatch.wd10ma; // "69.0"
-
-    // Fix the comma-decimal
-    const windSpeed = parseFloat(ws10ma_str.replace(",", "."));
-    const windDir = parseFloat(wd10ma_str);
-
-    // --- FINAL STEP: Send Perfect JSON to Garmin ---
-    res.setHeader('Cache-Control', 's-maxage=600'); // Cache for 10 minutes
-    return res.status(200).json({
-      windSpeed: windSpeed,
-      windDir: windDir
-    });
+    // If the loop finishes without returning, we found no data in 4 attempts.
+    return res.status(200).json({ error: "NO_DATA" });
 
   } catch (error) {
     return res.status(500).json({ error: error.message });
