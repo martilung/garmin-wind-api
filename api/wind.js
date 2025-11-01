@@ -14,91 +14,102 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing lat/lon parameters" });
   }
 
+  console.log(`--- NEW REQUEST: lat=${lat}, lon=${lon} ---`);
+
   try {
     // --- STEP 1: Get Nearest Station (using fetch) ---
-    // Using the correct "publicapi" domain and "latitude"/"longitude" params
     const stationURL = `https://publicapi.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?latitude=${lat}&longitude=${lon}`;
-    
+
     const stationRes = await fetch(stationURL, { headers: requestHeaders });
 
     if (!stationRes.ok) {
       throw new Error(`EMHI P1 Error: ${stationRes.status}`);
     }
-    
-    // --- We are now *expecting* JSON, not XML ---
-    const stationData = await stationRes.json(); 
-    
-    // The response is { "entries": { "entry": [ ... ] } }
+
+    const stationData = await stationRes.json();
     const station = stationData?.entries?.entry?.[0];
 
     if (!station) {
       return res.status(500).json({ error: "P1_PARSE (JSON)" });
     }
 
-    const distance = station.kaugus; // This is a String, e.g. "5.9"
-    const name = station.nimi; 
+    const distance = station.kaugus;
+    const name = station.nimi; // e.g. "Pirita RJ"
+    console.log(`STEP 1 SUCCESS: Found name='${name}', distance='${distance}'`);
 
     // --- STEP 2: Your 200km Check ---
     if (parseFloat(distance) > 200) {
+      console.log("STEP 2 FAILED: Out of Range (>200km)");
       return res.status(200).json({ error: "OOR" }); // Out of Range
     }
 
     // --- STEP 3: Get Wind Data (Fallback Logic) ---
     const now = new Date();
     const estonianTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Tallinn' }));
+
     const nameToMatch = name.split(" ")[0]; // "Pirita RJ" -> "Pirita"
+    console.log(`Attempting to match station name: '${nameToMatch}'`);
 
     for (let hourOffset = 0; hourOffset <= 3; hourOffset++) {
-      const timeToTry = new Date(estonianTime.getTime() - hourOffset * 3600000); 
+      const timeToTry = new Date(estonianTime.getTime() - hourOffset * 3600000);
 
       const dateStr = timeToTry.toISOString().split('T')[0];
       const hourStr = timeToTry.getHours().toString().padStart(2, '0');
 
+      console.log(`--- Checking hour ${hourStr} (offset ${hourOffset}) ---`);
+
       const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
-      
-      const windRes = await fetch(windURL, { headers: requestHeaders }); // Re-use the same headers
+      const windRes = await fetch(windURL, { headers: requestHeaders });
 
       if (!windRes.ok) {
         throw new Error(`EMHI P2 Error: ${windRes.status} for hour ${hourStr}`);
       }
-      
-      // --- Expecting JSON for the second call as well ---
+
       const windData = await windRes.json();
-      
       const allStations = windData?.entries?.entry;
 
       if (!allStations) {
-        continue; 
+        console.log(`Hour ${hourStr} data is empty. Trying previous hour.`);
+        continue;
       }
 
-      // --- STEP 4: Find Matching Station ---
-      const stationMatch = allStations.find(s => s.jaam === nameToMatch);
+      // --- STEP 4: Find Matching Station (THIS IS THE FIX) ---
+      // The key is "Jaam" (capital J), not "jaam".
+      const stationMatch = allStations.find(s => s.Jaam === nameToMatch);
+      // --- END OF FIX ---
+
       if (!stationMatch) {
+        console.log(`No match for '${nameToMatch}'. Available stations in this hour:`);
+        console.log(allStations.slice(0, 5).map(s => s.Jaam)); // Log first 5 station names
         continue;
       }
 
       // --- STEP 5: Fix & Format Data ---
-      const ws10ma_str = stationMatch.ws10ma; 
-      const wd10ma_str = stationMatch.wd10ma; 
+      const ws10ma_str = stationMatch.ws10ma;
+      const wd10ma_str = stationMatch.wd10ma;
 
       if (ws10ma_str === null || wd10ma_str === null) {
+        console.log(`Match found ('${nameToMatch}'), but data is null. Trying previous hour.`);
         continue;
       }
 
+      // --- WE FOUND VALID DATA! ---
+      console.log(`!!! SUCCESS: Found valid data for '${nameToMatch}' at hour ${hourStr}`);
       const windSpeed = parseFloat(ws10ma_str.replace(",", "."));
       const windDir = parseFloat(wd10ma_str);
 
-      res.setHeader('Cache-Control', 's-maxage=3600'); 
+      res.setHeader('Cache-Control', 's-maxage=3600');
       return res.status(200).json({
         windSpeed: windSpeed,
         windDir: windDir
       });
     }
 
+    console.log("--- Loop finished. No data found in 4 attempts. ---");
     return res.status(200).json({ error: "NO_DATA" });
 
   } catch (error) {
-    // If we are here, it's almost certainly the "Unexpected token '<'" error
+    console.error("--- CATCH BLOCK ERROR ---");
     console.error(error.message);
     return res.status(500).json({ error: error.message });
   }
