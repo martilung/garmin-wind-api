@@ -1,5 +1,5 @@
 // This is a Vercel Serverless Function (Node.js)
-// Save this file as: /api/wind.js
+// This file replaces /api/wind.js
 
 export default async function handler(req, res) {
   // 1. Get lat/lon from the Garmin device's query
@@ -8,10 +8,22 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Missing lat/lon parameters" });
   }
 
+  // --- THIS IS THE FIX ---
+  // We must send this header so EMHI returns JSON instead of XML
+  const requestHeaders = {
+    'accept': 'application/json'
+  };
+  // --- END OF FIX ---
+
   try {
     // --- STEP 1: Get Nearest Station (Your Logic) ---
     const stationURL = `https://publicapi.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?lat=${lat}&lon=${lon}`;
-    const stationRes = await fetch(stationURL);
+    
+    // --- THIS IS THE FIX ---
+    // Added the headers to the fetch call
+    const stationRes = await fetch(stationURL, { headers: requestHeaders });
+    // --- END OF FIX ---
+
     if (!stationRes.ok) {
       throw new Error(`EMHI P1 Error: ${stationRes.status}`);
     }
@@ -39,10 +51,20 @@ export default async function handler(req, res) {
     
     // Format date and hour based on Estonian time
     const dateStr = estonianTime.toISOString().split('T')[0]; // "YYYY-MM-DD"
+    
+    // --- THIS IS A TIMEZONE FIX ---
+    // We use getHours() to get the local Estonian hour (e.g., 12)
+    // not getUTCHours() (which would be 10)
     const hourStr = estonianTime.getHours().toString().padStart(2, '0'); // "HH"
+    // --- END OF FIX ---
 
     const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
-    const windRes = await fetch(windURL);
+
+    // --- THIS IS THE FIX ---
+    // Added the headers to the *second* fetch call
+    const windRes = await fetch(windURL, { headers: requestHeaders });
+    // --- END OF FIX ---
+
     if (!windRes.ok) {
       throw new Error(`EMHI P2 Error: ${windRes.status}`);
     }
@@ -77,6 +99,7 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    // This is what you saw. The try/catch block worked!
     return res.status(500).json({ error: error.message });
   }
 }
