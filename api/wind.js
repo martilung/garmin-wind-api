@@ -9,10 +9,10 @@ export default async function handler(req, res) {
   }
 
   // --- THIS IS THE FIX ---
-  // We must send this header so EMHI returns JSON instead of XML
-  const requestHeaders = {
-    'accept': 'application/json'
-  };
+  // Create a formal Headers object, which is more robust
+  // Use 'Accept' (capital 'A') just in case the server is case-sensitive
+  const requestHeaders = new Headers();
+  requestHeaders.append('Accept', 'application/json');
   // --- END OF FIX ---
 
   try {
@@ -20,7 +20,7 @@ export default async function handler(req, res) {
     const stationURL = `https://publicapi.envir.ee/v1/combinedWeatherData/nearestStationByCoordinates?lat=${lat}&lon=${lon}`;
     
     // --- THIS IS THE FIX ---
-    // Added the headers to the fetch call
+    // Pass the formal headers object to the fetch call
     const stationRes = await fetch(stationURL, { headers: requestHeaders });
     // --- END OF FIX ---
 
@@ -28,7 +28,8 @@ export default async function handler(req, res) {
       throw new Error(`EMHI P1 Error: ${stationRes.status}`);
     }
     
-    const stationData = await stationRes.json();
+    // This line was crashing because it was getting XML
+    const stationData = await stationRes.json(); 
     
     // Drill into the JSON
     const station = stationData?.entries?.entry?.[0];
@@ -46,22 +47,14 @@ export default async function handler(req, res) {
 
     // --- STEP 3: Get Wind Data (Your Logic) ---
     const now = new Date();
-    // Get time in 'Europe/Tallinn' time zone
     const estonianTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Tallinn' }));
-    
-    // Format date and hour based on Estonian time
-    const dateStr = estonianTime.toISOString().split('T')[0]; // "YYYY-MM-DD"
-    
-    // --- THIS IS A TIMEZONE FIX ---
-    // We use getHours() to get the local Estonian hour (e.g., 12)
-    // not getUTCHours() (which would be 10)
-    const hourStr = estonianTime.getHours().toString().padStart(2, '0'); // "HH"
-    // --- END OF FIX ---
+    const dateStr = estonianTime.toISOString().split('T')[0];
+    const hourStr = estonianTime.getHours().toString().padStart(2, '0');
 
     const windURL = `https://publicapi.envir.ee/v1/wind/observationWind?date=${dateStr}&hour=${hourStr}`;
 
     // --- THIS IS THE FIX ---
-    // Added the headers to the *second* fetch call
+    // Added the formal headers to the *second* fetch call
     const windRes = await fetch(windURL, { headers: requestHeaders });
     // --- END OF FIX ---
 
@@ -69,7 +62,7 @@ export default async function handler(req, res) {
       throw new Error(`EMHI P2 Error: ${windRes.status}`);
     }
     
-    const windData = await windRes.json();
+    const windData = await windRes.json(); // This line was also at risk
     const allStations = windData?.entries?.entry;
     if (!allStations) {
       return res.status(500).json({ error: "P2_PARSE" });
@@ -99,7 +92,6 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    // This is what you saw. The try/catch block worked!
     return res.status(500).json({ error: error.message });
   }
 }
