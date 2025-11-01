@@ -34,7 +34,7 @@ export default async function handler(req, res) {
     }
 
     const distance = station.kaugus;
-    const name = station.nimi; // e.g. "Pirita RJ"
+    const name = station.nimi; // e.g. "Otepää SMJ"
     console.log(`STEP 1 SUCCESS: Found name='${name}', distance='${distance}'`);
 
     // --- STEP 2: Your 200km Check ---
@@ -47,8 +47,11 @@ export default async function handler(req, res) {
     const now = new Date();
     const estonianTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Tallinn' }));
 
-    const nameToMatch = name.split(" ")[0]; // "Pirita RJ" -> "Pirita"
-    console.log(`Attempting to match station name: '${nameToMatch}'`);
+    // --- THIS IS THE FIX ---
+    // We will use the full, unmodified name from Step 1
+    const nameToMatch = name;
+    console.log(`Attempting to match exact station name: '${nameToMatch}'`);
+    // --- END OF FIX ---
 
     for (let hourOffset = 0; hourOffset <= 3; hourOffset++) {
       const timeToTry = new Date(estonianTime.getTime() - hourOffset * 3600000);
@@ -73,10 +76,9 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // --- STEP 4: Find Matching Station (THIS IS THE FIX) ---
-      // The key is "Jaam" (capital J), not "jaam".
+      // --- STEP 4: Find Matching Station ---
+      // We use the exact 'nameToMatch' and the correct 'Jaam' key
       const stationMatch = allStations.find(s => s.Jaam === nameToMatch);
-      // --- END OF FIX ---
 
       if (!stationMatch) {
         console.log(`No match for '${nameToMatch}'. Available stations in this hour:`);
