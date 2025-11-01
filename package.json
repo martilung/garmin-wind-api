@@ -8,8 +8,5 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "fast-xml-parser": "^4.4.0"
-  }
+  "license": "ISC"
 }
