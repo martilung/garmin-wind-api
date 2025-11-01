@@ -43,22 +43,24 @@ export default async function handler(req, res) {
   try {
     // --- STEP 1: Get the *ENTIRE* list of stations ---
     const url = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
-
+    
     const response = await fetch(url, { headers: requestHeaders });
 
     if (!response.ok) {
       throw new Error(`EMHI Error: ${response.status}`);
     }
-
-    const data = await response.json();
-
-    // The response is { "timestamp": "...", "stations": [ ... ] }
-    const allStations = data?.stations;
+    
+    const data = await response.json(); 
+    
+    // --- THIS IS THE FIX ---
+    // The API returns { "entries": { "entry": [ ... ] } }
+    const allStations = data?.entries?.entry;
+    // --- END OF FIX ---
 
     if (!allStations || allStations.length === 0) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
     }
-
+    
     console.log(`Found ${allStations.length} stations. Calculating distances...`);
 
     // --- STEP 2: Calculate distance for every station ---
@@ -66,9 +68,9 @@ export default async function handler(req, res) {
       // The API uses 'latitude' and 'longitude' (decimal)
       const stationLat = parseFloat(station.latitude);
       const stationLon = parseFloat(station.longitude);
-
+      
       const distance = getDistance(userLat, userLon, stationLat, stationLon);
-
+      
       return {
         ...station, // Keep all original station data
         distance: distance // Add our new distance field
@@ -79,7 +81,7 @@ export default async function handler(req, res) {
     const sortedStations = stationsWithDistance.sort((a, b) => a.distance - b.distance);
 
     // --- STEP 4: Find the nearest station with VALID data ---
-
+    
     // Get the current time (in Unix seconds)
     const now_unix = Math.floor(Date.now() / 1000);
     // Get the timestamp for 2 hours ago
@@ -88,17 +90,17 @@ export default async function handler(req, res) {
     for (const station of sortedStations) {
       // The timestamp is a Unix timestamp (e.g., 1678886400)
       const stationTimestamp = parseInt(station.timestamp, 10);
-
+      
       // --- Check 1: Is the data recent? ---
       if (stationTimestamp >= twoHoursAgo_unix) {
-
+        
         // --- Check 2: Does it have valid wind data? ---
         // The API uses 'windspeed' and 'winddirection' (numbers)
         if (station.windspeed !== null && station.winddirection !== null) {
-
+          
           // --- SUCCESS! ---
           console.log(`!!! SUCCESS: Found valid data at '${station.name}' (Distance: ${station.distance.toFixed(1)} km)`);
-
+          
           res.setHeader('Cache-Control', 's-maxage=600'); // Cache for 10 minutes
           return res.status(200).json({
             windSpeed: station.windspeed,
