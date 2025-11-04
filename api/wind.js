@@ -1,5 +1,5 @@
 // This file replaces /api/wind.js
-// We are back to built-in fetch and no external libraries.
+// It now fetches from *both* inland and coastal APIs
 
 // --- This is the "winning formula" header object ---
 const requestHeaders = {
@@ -12,12 +12,11 @@ function deg2rad(deg) {
   return deg * (Math.PI / 180);
 }
 
-// --- NEW Helper to convert DMS (from EMHI strings) to Decimal ---
+// --- Helper to convert DMS (from EMHI strings) to Decimal ---
 function dmsToDecimal(kraad, minut, sekund) {
   const K = parseFloat(kraad);
   const M = parseFloat(minut);
   const S = parseFloat(sekund);
-  
   // Decimal = Degrees + (Minutes / 60) + (Seconds / 3600)
   return K + (M / 60) + (S / 3600);
 }
@@ -50,30 +49,68 @@ export default async function handler(req, res) {
   console.log(`--- NEW REQUEST: lat=${lat}, lon=${lon} ---`);
 
   try {
-    // --- STEP 1: Get the *ENTIRE* list of stations ---
-    const url = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
+    // --- STEP 1: Make both requests in parallel ---
+    const inlandUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
+    const coastalUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/coastalSeaStationsWeatherToday";
     
-    const response = await fetch(url, { headers: requestHeaders });
+    const [inlandRes, coastalRes] = await Promise.all([
+      fetch(inlandUrl, { headers: requestHeaders }),
+      fetch(coastalUrl, { headers: requestHeaders })
+    ]);
 
-    if (!response.ok) {
-      throw new Error(`EMHI Error: ${response.status}`);
+    if (!inlandRes.ok || !coastalRes.ok) {
+      throw new Error(`EMHI Error: Inland=${inlandRes.status}, Coastal=${coastalRes.status}`);
     }
     
-    const data = await response.json(); 
-    const allStations = data?.entries?.entry;
-
-    if (!allStations || allStations.length === 0) {
+    const inlandData = await inlandRes.json(); 
+    const coastalData = await coastalRes.json();
+    
+    const inlandStations = inlandData?.entries?.entry || [];
+    const coastalStations = coastalData?.entries?.entry || [];
+    
+    const combinedStations = [...inlandStations, ...coastalStations];
+    
+    if (combinedStations.length === 0) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
     }
     
-    console.log(`Found ${allStations.length} stations. Calculating distances...`);
+    console.log(`Found ${combinedStations.length} total stations. Filtering...`);
 
-    // --- STEP 2: Calculate distance for every station ---
-    const stationsWithDistance = allStations.map(station => {
-      
+    // --- STEP 2: Clean and filter the combined list ---
+    const now_unix = Math.floor(Date.now() / 1000);
+    const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
+
+    const stationMap = new Map();
+
+    for (const station of combinedStations) {
+      // 1. Check for duplicates (and only keep the first one)
+      if (station.Jaam && !stationMap.has(station.Jaam)) {
+        
+        // 2. Check for valid data
+        if (station.ws10ma !== null && station.wd10ma !== null && station.Time !== null) {
+          
+          // 3. Check if data is recent (less than 2h old)
+          const stationTimestamp_unix = Math.floor(new Date(station.Time).getTime() / 1000);
+          if (stationTimestamp_unix >= twoHoursAgo_unix) {
+            stationMap.set(station.Jaam, station);
+          }
+        }
+      }
+    }
+
+    const cleanStations = Array.from(stationMap.values());
+    
+    if (cleanStations.length === 0) {
+      console.log("--- No stations found after filtering. ---");
+      return res.status(200).json({ error: "NO_DATA" });
+    }
+
+    console.log(`Found ${cleanStations.length} clean, unique stations. Calculating distances...`);
+
+    // --- STEP 3: Calculate distance for every clean station ---
+    const stationsWithDistance = cleanStations.map(station => {
       const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
-
       const distance = getDistance(userLat, userLon, stationLat, stationLon);
       
       return {
@@ -82,47 +119,30 @@ export default async function handler(req, res) {
       };
     });
 
-    // --- STEP 3: Sort the list by distance (nearest first) ---
+    // --- STEP 4: Sort the list by distance (nearest first) ---
     const sortedStations = stationsWithDistance.sort((a, b) => a.distance - b.distance);
 
-    // --- STEP 4: Find the nearest station with VALID data ---
+    const nearestStation = sortedStations[0];
     
-    const now_unix = Math.floor(Date.now() / 1000);
-    const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
-
-    for (const station of sortedStations) {
-      
-      const stationTimestamp_unix = Math.floor(new Date(station.Time).getTime() / 1000);
-      
-      // --- Check 1: Is the data recent? ---
-      if (stationTimestamp_unix >= twoHoursAgo_unix) {
-        
-        // --- Check 2: Does it have valid wind data? ---
-        if (station.ws10ma !== null && station.wd10ma !== null) {
-          
-          // --- SUCCESS! ---
-          console.log(`!!! SUCCESS: Found valid data at '${station.Jaam}' (Distance: ${station.distance.toFixed(1)} km)`);
-          
-          const windSpeed = parseFloat(station.ws10ma);
-          const windDir = parseFloat(station.wd10ma);
-
-          res.setHeader('Cache-Control', 's-maxage=3600'); // Cache for 1 hour
-          
-          // --- THIS IS THE CHANGE ---
-          // We are now adding the station name to the response
-          return res.status(200).json({
-            windSpeed: windSpeed,
-            windDir: windDir,
-            stationName: station.Jaam // e.g. "Pirita" or "Tartu-Tõravere"
-          });
-          // --- END OF CHANGE ---
-        }
-      }
+    // --- STEP 5: Your 200km Check ---
+    if (nearestStation.distance > 200) {
+      console.log(`STEP 5 FAILED: Nearest station '${nearestStation.Jaam}' is ${nearestStation.distance.toFixed(1)} km away (>200km).`);
+      return res.status(200).json({ error: "OOR" }); // Out of Range
     }
 
-    // --- STEP 5: Fail (if loop finishes with no data) ---
-    console.log("--- Loop finished. No station found with data newer than 2 hours. ---");
-    return res.status(200).json({ error: "NO_DATA" });
+    // --- STEP 6: Success! Return the data ---
+    console.log(`!!! SUCCESS: Found valid data at '${nearestStation.Jaam}' (Distance: ${nearestStation.distance.toFixed(1)} km)`);
+    
+    const windSpeed = parseFloat(nearestStation.ws10ma);
+    const windDir = parseFloat(nearestStation.wd10ma);
+
+    res.setHeader('Cache-Control', 's-maxage=3600'); // Cache for 1 hour
+    
+    return res.status(200).json({
+      windSpeed: windSpeed,
+      windDir: windDir,
+      stationName: nearestStation.Jaam // We'll send the name
+    });
 
   } catch (error) {
     console.error("--- CATCH BLOCK ERROR ---");
@@ -130,3 +150,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: error.message });
   }
 }
+
