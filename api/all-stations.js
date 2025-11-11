@@ -1,4 +1,4 @@
-// --- NEW FILE: /api/all-stations.js ---
+// --- /api/all-stations.js ---
 // Provides all station data for the web map portal
 
 const requestHeaders = {
@@ -9,11 +9,19 @@ const requestHeaders = {
 // --- Helper to convert DMS (from EMHI strings) to Decimal ---
 function dmsToDecimal(kraad, minut, sekund) {
   const K = parseFloat(kraad);
-  const M = parseFloat(minut); // <-- This was 'minutes', corrected to 'minut'
+  const M = parseFloat(minut);
   const S = parseFloat(sekund);
-  // Decimal = Degrees + (Minutes / 60) + (Seconds / 3600)
   return K + (M / 60) + (S / 3600);
 }
+
+// --- Helper to format UTC time string to Estonian HH:mm ---
+// We create this formatter once for efficiency
+const estonianTimeFormatter = new Intl.DateTimeFormat('et-EE', {
+  timeZone: 'Europe/Tallinn',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false
+});
 
 // --- Main API Handler for the Web Portal ---
 export default async function handler(req, res) {
@@ -24,18 +32,15 @@ export default async function handler(req, res) {
     const inlandUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
     const coastalUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/coastalSeaStationsWeatherToday";
 
-    // --- CHANGE 1: Add data caching to the fetch calls ---
-    // This tells Vercel's Data Cache to store the result of these
-    // fetches for 1800 seconds (30 minutes).
-    // Your function will not hit EMHI's servers more than once in 30 mins.
+    // Data Caching: 30-minute revalidation (1800s)
     const [inlandRes, coastalRes] = await Promise.all([
       fetch(inlandUrl, {
         headers: requestHeaders,
-        next: { revalidate: 1800 } // 30-minute cache
+        next: { revalidate: 1800 }
       }),
       fetch(coastalUrl, {
         headers: requestHeaders,
-        next: { revalidate: 1800 } // 30-minute cache
+        next: { revalidate: 1800 }
       })
     ]);
 
@@ -54,8 +59,6 @@ export default async function handler(req, res) {
     if (combinedStations.length === 0) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
     }
-
-    console.log(`Found ${combinedStations.length} total stations from cached/fresh data. Filtering...`);
 
     // --- STEP 2: Clean and filter the combined list ---
     const now_unix = Math.floor(Date.now() / 1000);
@@ -80,47 +83,42 @@ export default async function handler(req, res) {
 
     if (cleanStations.length === 0) {
       console.log("--- No stations found after filtering. ---");
-      return res.status(200).json({ retrieved_at: "N/A", stations: [] });
+      return res.status(200).json([]); // Return empty array
     }
 
     console.log(`Found ${cleanStations.length} clean, unique stations. Formatting for portal...`);
 
     // --- STEP 3: Format the data for the portal ---
     const portalData = cleanStations.map(station => {
+      // Calculate coordinates
       const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
 
+      // --- CHANGE: Format the station's own observation time ---
+      // Parse the UTC timestamp string from EMHI
+      const observationDate = new Date(station.Time);
+      // Format it into Estonian HH:mm time
+      const observationTime = estonianTimeFormatter.format(observationDate);
+
+      // Return the clean object
       return {
         name: station.Jaam,
         latitude: stationLat,
         longitude: stationLon,
         wind_speed: parseFloat(station.ws10ma),
-        wind_direction: parseFloat(station.wd10ma)
+        wind_direction: parseFloat(station.wd10ma),
+        observation_time: observationTime // <-- HERE is the new field
       };
     });
 
-    // --- STEP 4: Success! Get timestamp and return the data ---
+    // --- STEP 4: Success! Return the data array ---
+    console.log(`!!! SUCCESS: Sending ${portalData.length} stations to the portal.`);
 
-    // --- CHANGE 2: Get Estonian time and modify the response structure ---
-    const estonianTime = new Intl.DateTimeFormat('et-EE', {
-      timeZone: 'Europe/Tallinn',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false
-    }).format(new Date());
-
-    console.log(`!!! SUCCESS: Sending ${portalData.length} stations to the portal. Time: ${estonianTime}`);
-
-    // This CDN cache (10 min) is separate from the data cache (30 min).
-    // This is good! Users get a fast response from the CDN,
-    // and the CDN refetches from your function, which serves cached data.
+    // CDN cache (10 min)
     res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1200');
 
-    // Return an object, not an array
-    return res.status(200).json({
-      retrieved_at: estonianTime,
-      stations: portalData
-    });
+    // Return the simple array, as originally planned
+    return res.status(200).json(portalData);
 
   } catch (error) {
     console.error("--- CATCH BLOCK ERROR (/api/all-stations) ---");
