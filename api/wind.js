@@ -52,7 +52,7 @@ export default async function handler(req, res) {
     // --- STEP 1: Make both requests in parallel ---
     const inlandUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
     const coastalUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/coastalSeaStationsWeatherToday";
-    
+
     const [inlandRes, coastalRes] = await Promise.all([
       fetch(inlandUrl, { headers: requestHeaders }),
       fetch(coastalUrl, { headers: requestHeaders })
@@ -61,19 +61,19 @@ export default async function handler(req, res) {
     if (!inlandRes.ok || !coastalRes.ok) {
       throw new Error(`EMHI Error: Inland=${inlandRes.status}, Coastal=${coastalRes.status}`);
     }
-    
-    const inlandData = await inlandRes.json(); 
+
+    const inlandData = await inlandRes.json();
     const coastalData = await coastalRes.json();
-    
+
     const inlandStations = inlandData?.entries?.entry || [];
     const coastalStations = coastalData?.entries?.entry || [];
-    
+
     const combinedStations = [...inlandStations, ...coastalStations];
-    
+
     if (combinedStations.length === 0) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
     }
-    
+
     console.log(`Found ${combinedStations.length} total stations. Filtering...`);
 
     // --- STEP 2: Clean and filter the combined list ---
@@ -85,10 +85,10 @@ export default async function handler(req, res) {
     for (const station of combinedStations) {
       // 1. Check for duplicates (and only keep the first one)
       if (station.Jaam && !stationMap.has(station.Jaam)) {
-        
+
         // 2. Check for valid data
         if (station.ws10ma !== null && station.wd10ma !== null && station.Time !== null) {
-          
+
           // 3. Check if data is recent (less than 2h old)
           const stationTimestamp_unix = Math.floor(new Date(station.Time).getTime() / 1000);
           if (stationTimestamp_unix >= twoHoursAgo_unix) {
@@ -99,7 +99,7 @@ export default async function handler(req, res) {
     }
 
     const cleanStations = Array.from(stationMap.values());
-    
+
     if (cleanStations.length === 0) {
       console.log("--- No stations found after filtering. ---");
       return res.status(200).json({ error: "NO_DATA" });
@@ -112,10 +112,10 @@ export default async function handler(req, res) {
       const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
       const distance = getDistance(userLat, userLon, stationLat, stationLon);
-      
+
       return {
-        ...station, 
-        distance: distance 
+        ...station,
+        distance: distance
       };
     });
 
@@ -123,7 +123,7 @@ export default async function handler(req, res) {
     const sortedStations = stationsWithDistance.sort((a, b) => a.distance - b.distance);
 
     const nearestStation = sortedStations[0];
-    
+
     // --- STEP 5: Your 200km Check ---
     if (nearestStation.distance > 200) {
       console.log(`STEP 5 FAILED: Nearest station '${nearestStation.Jaam}' is ${nearestStation.distance.toFixed(1)} km away (>200km).`);
@@ -132,12 +132,12 @@ export default async function handler(req, res) {
 
     // --- STEP 6: Success! Return the data ---
     console.log(`!!! SUCCESS: Found valid data at '${nearestStation.Jaam}' (Distance: ${nearestStation.distance.toFixed(1)} km)`);
-    
+
     const windSpeed = parseFloat(nearestStation.ws10ma);
     const windDir = parseFloat(nearestStation.wd10ma);
 
-    res.setHeader('Cache-Control', 's-maxage=3600'); // Cache for 1 hour
-    
+    res.setHeader('Cache-Control', 's-maxage=1800'); // Cache for 1 hour
+
     return res.status(200).json({
       windSpeed: windSpeed,
       windDir: windDir,
