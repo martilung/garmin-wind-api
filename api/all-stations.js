@@ -9,8 +9,9 @@ const requestHeaders = {
 // --- Helper to convert DMS (from EMHI strings) to Decimal ---
 function dmsToDecimal(kraad, minut, sekund) {
   const K = parseFloat(kraad);
-  const M = parseFloat(minutes);
+  const M = parseFloat(minut); // <-- This was 'minutes', corrected to 'minut'
   const S = parseFloat(sekund);
+  // Decimal = Degrees + (Minutes / 60) + (Seconds / 3600)
   return K + (M / 60) + (S / 3600);
 }
 
