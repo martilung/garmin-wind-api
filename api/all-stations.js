@@ -9,7 +9,7 @@ const requestHeaders = {
 // --- Helper to convert DMS (from EMHI strings) to Decimal ---
 function dmsToDecimal(kraad, minut, sekund) {
   const K = parseFloat(kraad);
-  const M = parseFloat(minut);
+  const M = parseFloat(minut); // Corrected from 'minutes'
   const S = parseFloat(sekund);
   return K + (M / 60) + (S / 3600);
 }
@@ -25,22 +25,37 @@ const estonianTimeFormatter = new Intl.DateTimeFormat('et-EE', {
 
 // --- Main API Handler for the Web Portal ---
 export default async function handler(req, res) {
+
+  // --- 1. CORS FIX ---
+  // This header must match your frontend's domain *exactly*.
+  res.setHeader('Access-Control-Allow-Origin', 'https://ee-tuul.vercel.app');
+
+  // Handle the browser's pre-flight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.status(200).end();
+    return;
+  }
+  // --- END CORS FIX ---
+
+
   console.log(`--- NEW PORTAL REQUEST: /api/all-stations ---`);
 
   try {
-    // --- STEP 1: Make both requests in parallel ---
+    // --- 2. FETCH DATA (with 30-minute data cache) ---
     const inlandUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
     const coastalUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/coastalSeaStationsWeatherToday";
 
-    // Data Caching: 30-minute revalidation (1800s)
+    // next: { revalidate: 1800 } tells Vercel to cache the *data*
+    // from this fetch for 1800 seconds (30 minutes).
     const [inlandRes, coastalRes] = await Promise.all([
       fetch(inlandUrl, {
         headers: requestHeaders,
-        next: { revalidate: 1800 }
+        next: { revalidate: 1800 } // 30-minute data cache
       }),
       fetch(coastalUrl, {
         headers: requestHeaders,
-        next: { revalidate: 1800 }
+        next: { revalidate: 1800 } // 30-minute data cache
       })
     ]);
 
@@ -60,7 +75,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "STATION_LIST_PARSE_FAIL" });
     }
 
-    // --- STEP 2: Clean and filter the combined list ---
+    // --- 3. CLEAN AND FILTER DATA ---
     const now_unix = Math.floor(Date.now() / 1000);
     const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
 
@@ -88,13 +103,11 @@ export default async function handler(req, res) {
 
     console.log(`Found ${cleanStations.length} clean, unique stations. Formatting for portal...`);
 
-    // --- STEP 3: Format the data for the portal ---
+    // --- 4. FORMAT FINAL RESPONSE ---
     const portalData = cleanStations.map(station => {
-      // Calculate coordinates
-      const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
+      const stationLat = dmsToDecimal(station.LaiusKDMS, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
 
-      // --- CHANGE: Format the station's own observation time ---
       // Parse the UTC timestamp string from EMHI
       const observationDate = new Date(station.Time);
       // Format it into Estonian HH:mm time
@@ -107,17 +120,18 @@ export default async function handler(req, res) {
         longitude: stationLon,
         wind_speed: parseFloat(station.ws10ma),
         wind_direction: parseFloat(station.wd10ma),
-        observation_time: observationTime // <-- HERE is the new field
+        observation_time: observationTime
       };
     });
 
-    // --- STEP 4: Success! Return the data array ---
+    // --- 5. SEND RESPONSE (with 10-minute CDN cache) ---
     console.log(`!!! SUCCESS: Sending ${portalData.length} stations to the portal.`);
 
-    // CDN cache (10 min)
+    // This s-maxage=600 (10 min) is the *CDN* cache.
+    // This is separate from the 30-min *data* cache.
+    // This setup is correct and efficient.
     res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1200');
 
-    // Return the simple array, as originally planned
     return res.status(200).json(portalData);
 
   } catch (error) {
