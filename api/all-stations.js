@@ -105,7 +105,7 @@ export default async function handler(req, res) {
 
     // --- 4. FORMAT FINAL RESPONSE ---
     const portalData = cleanStations.map(station => {
-      const stationLat = dmsToDecimal(station.LaiusKDMS, station.LaiusMinut, station.LaiusSekund);
+      const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
 
       // Parse the UTC timestamp string from EMHI
