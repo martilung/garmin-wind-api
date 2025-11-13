@@ -9,13 +9,12 @@ const requestHeaders = {
 // --- Helper to convert DMS (from EMHI strings) to Decimal ---
 function dmsToDecimal(kraad, minut, sekund) {
   const K = parseFloat(kraad);
-  const M = parseFloat(minut); // Corrected from 'minutes'
+  const M = parseFloat(minut);
   const S = parseFloat(sekund);
   return K + (M / 60) + (S / 3600);
 }
 
 // --- Helper to format UTC time string to Estonian HH:mm ---
-// We create this formatter once for efficiency
 const estonianTimeFormatter = new Intl.DateTimeFormat('et-EE', {
   timeZone: 'Europe/Tallinn',
   hour: '2-digit',
@@ -27,10 +26,8 @@ const estonianTimeFormatter = new Intl.DateTimeFormat('et-EE', {
 export default async function handler(req, res) {
 
   // --- 1. CORS FIX ---
-  // This header must match your frontend's domain *exactly*.
   res.setHeader('Access-Control-Allow-Origin', 'https://ee-tuul.vercel.app');
 
-  // Handle the browser's pre-flight OPTIONS request
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Methods', 'GET');
     res.status(200).end();
@@ -46,8 +43,6 @@ export default async function handler(req, res) {
     const inlandUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/frontPageWeatherToday";
     const coastalUrl = "https://publicapi.envir.ee/v1/combinedWeatherData/coastalSeaStationsWeatherToday";
 
-    // next: { revalidate: 1800 } tells Vercel to cache the *data*
-    // from this fetch for 1800 seconds (30 minutes).
     const [inlandRes, coastalRes] = await Promise.all([
       fetch(inlandUrl, {
         headers: requestHeaders,
@@ -77,12 +72,13 @@ export default async function handler(req, res) {
 
     // --- 3. CLEAN AND FILTER DATA ---
     const now_unix = Math.floor(Date.now() / 1000);
-    const twoHoursAgo_unix = now_unix - (2 * 3600); // 7200 seconds
+    const twoHoursAgo_unix = now_unix - (2 * 3600);
 
     const stationMap = new Map();
 
     for (const station of combinedStations) {
       if (station.Jaam && !stationMap.has(station.Jaam)) {
+        // We do *not* require ws1hx to be present, so no change to this filter
         if (station.ws10ma !== null && station.wd10ma !== null && station.Time !== null &&
           station.LaiusKraad !== null && station.PikkusKraad !== null) {
 
@@ -98,7 +94,7 @@ export default async function handler(req, res) {
 
     if (cleanStations.length === 0) {
       console.log("--- No stations found after filtering. ---");
-      return res.status(200).json([]); // Return empty array
+      return res.status(200).json([]);
     }
 
     console.log(`Found ${cleanStations.length} clean, unique stations. Formatting for portal...`);
@@ -107,11 +103,13 @@ export default async function handler(req, res) {
     const portalData = cleanStations.map(station => {
       const stationLat = dmsToDecimal(station.LaiusKraad, station.LaiusMinut, station.LaiusSekund);
       const stationLon = dmsToDecimal(station.PikkusKraad, station.PikkusMinut, station.PikkusSekund);
-
-      // Parse the UTC timestamp string from EMHI
       const observationDate = new Date(station.Time);
-      // Format it into Estonian HH:mm time
       const observationTime = estonianTimeFormatter.format(observationDate);
+
+      // --- ADDED THIS ---
+      // Handle null values for wind gust
+      const gustSpeed = station.ws1hx !== null ? parseFloat(station.ws1hx) : null;
+      // --- END ADD ---
 
       // Return the clean object
       return {
@@ -120,16 +118,14 @@ export default async function handler(req, res) {
         longitude: stationLon,
         wind_speed: parseFloat(station.ws10ma),
         wind_direction: parseFloat(station.wd10ma),
-        observation_time: observationTime
+        observation_time: observationTime,
+        wind_gust: gustSpeed // <-- Add the new field
       };
     });
 
     // --- 5. SEND RESPONSE (with 10-minute CDN cache) ---
     console.log(`!!! SUCCESS: Sending ${portalData.length} stations to the portal.`);
 
-    // This s-maxage=600 (10 min) is the *CDN* cache.
-    // This is separate from the 30-min *data* cache.
-    // This setup is correct and efficient.
     res.setHeader('Cache-Control', 's-maxage=600, stale-while-revalidate=1200');
 
     return res.status(200).json(portalData);
